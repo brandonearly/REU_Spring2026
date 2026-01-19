@@ -5,5 +5,5 @@ Smart Lane Marking Project
 [Download Word Document](Smart_Adaptive_Lane_Marking_Node.docx)
 
 **Current Research/Plans for the Next Steps:**
-[Download Word Document](Week 3 Research.docx)
+[Download Word Document](Week3Research.docx)
 

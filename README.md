@@ -4,6 +4,6 @@ Smart Lane Marking Project
 **Current Prototype Wiring, Testing, Results, and Future Considerations:**  
 [Download Word Document](Smart_Adaptive_Lane_Marking_Node.docx)
 
-**Current Research/Plans for the Next Steps**
+**Current Research/Plans for the Next Steps:**
 [Download Word Document](Week 3 Research.docx)
 

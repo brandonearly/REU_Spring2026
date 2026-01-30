@@ -1,38 +1,100 @@
+/*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
+
+#include <avr/sleep.h> //allows for 'sleep' mode power saving
+#include <avr/wdt.h> //for interval wakes
+#include <avr/interrupt.h> 
+
 //RBG PINS and initalized color values
-int redPin = 9;
-int greenPin = 10;
-int bluePin = 11;
-int baseR = 0;
-int baseG = 255; 
-int baseB = 0;
+#define redPin 9
+#define greenPin 10
+#define bluePin 11
+#define baseR 0
+#define baseG 255
+#define baseB 0
+
 //ULTRASONIC PINS/VARIABLES
-int trigPin = 12;
-int echoPin = 13;
-//float distThreshold = 5; //centimeters
-float MINDIST = 0; //centimeters, hardcoded test values for prototype's sake
-float MAXDIST = 5.0; //centimeters, hardcoded test values for prototype's sake
+#define trigPin 12
+#define echoPin 13
+#define MINDIST 0 //centimeters, hardcoded test values for prototype's sake
+#define MAXDIST 5.0 //centimeters, hardcoded test values for prototype's sake
 boolean ultrasonicHigh; 
+
 //PHOTORESISTOR PINS/VARIABLES
-int lightPin = A0; //implicitly INPUT pin
+#define lightPin A0 //implicitly INPUT pin
 int lightLevelADC = 0;
-float MINLIGHT = .3; //hardcoded test values for prototype's sake
-float MAXLIGHT = 4.5; //hardcoded test values for prototype's sake
+#define MINLIGHT .3 //hardcoded test values for prototype's sake
+#define MAXLIGHT 4.5 //hardcoded test values for prototype's sake
+
 //THERMISTOR PINS/VARIABLES
-int tempPin = A1; //implicitly INPUT pin
+#define tempPin A1 //implicitly INPUT pin
 int temperatureADC = 0;
-float MINTEMP = 2.6; //hardcoded test values for prototype's sake
-float MAXTEMP = 3.0; //hardcoded test values for prototype's sake
+#define MINTEMP 2.6 //hardcoded test values for prototype's sake
+#define MAXTEMP 3.0 //hardcoded test values for prototype's sake
+
+//sensor reading and normalization variables
+float distance;
+float lightLevel;
+float temperature;
+float distNorm;
+float lightNorm;
+float tempNorm;
+#define distWeight .4 //adjust based on surrounding environment
+#define lightWeight .4 //adjust based on surrounding environment
+#define tempWeight .2 //adjust based on surrounding environment
+float normalizedAvg;
+
 //COMMUNICATION PINS/VARIABLES
-String state;
+float stateVector[2]; //meant to have 3 elements, 'current state' , 'current brightness' and 'color'
+int stateBit = 0; //default to inactive
+int brightVector[2]; //vector to contain each bit of the normalizedAvg variable
+int RBGVector[2]; //vector to contain each 8 bit word for R G and B
+boolean commWake = false; 
+
+//Sleep Mode VARIABLES
+#define WAKEAVG_THRESHOLD .35 
+unsigned long belowThresholdStart = 0;
+boolean SLEEP = true; //current state flag, initialized to true so the nodes default to an inactive state
+boolean wdtWake = false; //flag to indicate the WDT woke the MCU
+#define SLEEP_DELAY 300
+
+/*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
+
+
+
+/*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
 
 void setup() {
-  Serial.begin(9600);
+  
+  //communication intializations
+  //Serial1.begin(9600);
+  //Serial2.begin(9600);
+
+  //LED/Sensor pins
   pinMode(redPin, OUTPUT);
   pinMode(greenPin, OUTPUT);
   pinMode(bluePin, OUTPUT);
   pinMode(trigPin, OUTPUT);
   pinMode(echoPin, INPUT);
+
+  //interval wakes WDT
+  MCUSR &= ~(1 << WDRF); // Clear watchdog reset flag
+  WDTCSR |= (1 << WDCE) | (1 << WDE); // Enable configuration
+  WDTCSR = (1 << WDIE) | (1 << WDP3) | (1 << WDP0); // ~8s interrupt
+
+  //sleep mode 
+  set_sleep_mode(SLEEP_MODE_IDLE);
+  sei(); //enable interrupts
+  sleep_enable();
+  sleep_cpu();
+  sleep_disable();
+
 }
+
+/*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
+
+
+
+/*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
 
 /*Reads the ultrasonic sensor and converts the time of the pulse to distance of the object*/
 float getDistanceCM() {
@@ -71,40 +133,128 @@ float getTemperature(){
   return temperatureReading;
 }
 
-void loop() {
-  float distance = getDistanceCM();
-  float lightLevel = getLightLevel();
-  float temperature = getTemperature();
-
-  /*Normalizing sensor inputs onto one numerical scale, constrain() syntax ChatGPT sourced. These will give us 3 values between 0.0 and 1.0*/
-  float lightNorm = constrain((lightLevel - MINLIGHT) / (MAXLIGHT - MINLIGHT), 0.0,1.0);
-  float tempNorm = constrain((temperature - MINTEMP) / (MAXTEMP - MINTEMP), 0.0, 1.0);
-  float distNorm = constrain((MAXDIST - distance) / (MAXDIST - MINDIST), 0.0, 1.0);
-
-  /*Once we have the normalized values, we can combine and adjust LED brightness accordingly, weights/coeffcients should be adjusted as needed, must add to 1.0*/
-  float normalizedAvg = (.4*lightNorm + .2*tempNorm + .4*distNorm);
-
-  /*Placehold state/communication updates*/
-  if(normalizedAvg >= .5){
-    state = "ON";
-  }
-  else{
-    state ="OFF";
-  }
-
-  /*LED writing, brightness adjusted based on the normalized, weighted average of the sensors*/
-  analogWrite(redPin, baseR * normalizedAvg);
-  analogWrite(greenPin, baseG * normalizedAvg);
-  analogWrite(bluePin, baseB * normalizedAvg);
-  
-  /*Debugging/placeholder for potential data saving*/
-  Serial.println("Normalized Light Level: " + String(lightNorm));
-  Serial.println("Normalized Temperature: " + String(tempNorm));
-  Serial.println("Normalized Ultrasonic: " + String(distNorm));
-  Serial.println("Normalized Average: " + String(normalizedAvg));
-
-  //initial placeholder for wired communication output of somesort 
-  Serial.println("NODE State: " + state);
-
-  delay(50); //50 ms delay ensure sensor readings are accurate and as smooth/close to real time as possible
+/*Read current time in millis*/
+unsigned long getTime(){
+  return millis();
 }
+
+float readSensors(){
+
+  //read in measurements
+    distance = getDistanceCM();
+    lightLevel = getLightLevel();
+    temperature = getTemperature();
+    
+    //normallize readings into one number scale
+    distNorm = constrain((MAXDIST - distance) / (MAXDIST - MINDIST), 0.0, 1.0);
+    lightNorm = constrain((lightLevel - MINLIGHT) / (MAXLIGHT - MINLIGHT), 0.0, 1.0);
+    tempNorm = constrain((temperature - MINTEMP) / (MAXTEMP - MINTEMP), 0.0, 1.0);
+
+    /*Once we have the normalized values, we can combine and adjust LED brightness accordingly, using  a 
+    weighted average of the readings, weights are adjustable based on conditions (maybe dynamically adjustable down the line?)*/
+    normalizedAvg = ( (distWeight * distNorm) + (lightWeight * lightNorm) + (tempWeight * tempNorm) );
+    return normalizedAvg;
+}
+
+ISR(WDT_vect  ){
+  wdtWake = true;
+}
+
+/*
+void checkComms(){
+  if(Serial1.available()){
+
+  }
+}
+*/
+
+/*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
+
+
+
+/*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
+
+void loop() {
+  
+  if(SLEEP){
+
+    //wake on 8 second interval
+    if(wdtWake){
+
+      //reset flag
+      wdtWake = false;
+
+      //get sensor readings
+      normalizedAvg = readSensors();
+
+      //check if readings require active node
+      if(normalizedAvg > WAKEAVG_THRESHOLD){
+
+        //update flag if node awakes  
+        SLEEP = false;
+      
+      }
+      else{
+          
+        //put back to sleep
+        sleep_enable();
+        sleep_cpu();
+        sleep_disable();
+      
+      }
+    }
+  }
+  //if the node is active
+  else{
+
+    normalizedAvg = readSensors(); 
+
+    if(normalizedAvg <= WAKEAVG_THRESHOLD){
+      
+      //this clocks the first time normalized average goes low
+      if(belowThresholdStart == 0){
+        
+        belowThresholdStart = getTime();
+      
+      }
+      //this clocks the avg low at a close time to the first low, insurance against debounce style issues
+      else if(getTime() - belowThresholdStart >= SLEEP_DELAY){
+        //reset sleep timer
+        belowThresholdStart = getTime();
+
+        //update flag
+        SLEEP = true;
+
+
+        //explicitly turn off LED
+        analogWrite(redPin, 0);
+        analogWrite(greenPin, 0);
+        analogWrite(bluePin, 0);
+
+        //go to sleep
+        sleep_enable();
+        sleep_cpu();
+        sleep_disable();
+      }
+    }
+    else{
+
+      //reset sleep timer
+      belowThresholdStart = 0;
+      
+      //configure the LED
+      analogWrite(redPin, baseR * normalizedAvg);
+      analogWrite(greenPin, baseG * normalizedAvg);
+      analogWrite(bluePin, baseB * normalizedAvg);
+
+      //communicate local state
+      //Serial1.write();
+      //Serial2.write();
+
+    }
+
+  }
+  delay(50); //super small delay for sensor smoothing
+}
+
+/*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/

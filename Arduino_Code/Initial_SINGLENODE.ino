@@ -1,8 +1,6 @@
 /*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
 
-#include <avr/sleep.h> //allows for 'sleep' mode power saving
-#include <avr/wdt.h> //for interval wakes
-#include <avr/interrupt.h> 
+#include <ArduinoLowPower.h>
 
 //RBG PINS and initalized color values
 #define redPin 9
@@ -41,21 +39,23 @@ float tempNorm;
 #define distWeight .4 //adjust based on surrounding environment
 #define lightWeight .4 //adjust based on surrounding environment
 #define tempWeight .2 //adjust based on surrounding environment
-float normalizedAvg;
 
 //COMMUNICATION PINS/VARIABLES
 float stateVector[2]; //meant to have 3 elements, 'current state' , 'current brightness' and 'color'
 int stateBit = 0; //default to inactive
 int brightVector[2]; //vector to contain each bit of the normalizedAvg variable
-int RBGVector[2]; //vector to contain each 8 bit word for R G and B
-boolean commWake = false; 
+int RBGVector[2]; //vector to contain each 8 bit word for R G and B 
 
 //Sleep Mode VARIABLES
 #define WAKEAVG_THRESHOLD .35 
+#define SLEEP_INTERVAL 5000
+#define SLEEP_DELAY 300
+
+//State variables
 unsigned long belowThresholdStart = 0;
 boolean SLEEP = true; //current state flag, initialized to true so the nodes default to an inactive state
-boolean wdtWake = false; //flag to indicate the WDT woke the MCU
-#define SLEEP_DELAY 300
+float normalizedAvg;
+boolean commWake = false;
 
 /*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
 
@@ -75,19 +75,6 @@ void setup() {
   pinMode(bluePin, OUTPUT);
   pinMode(trigPin, OUTPUT);
   pinMode(echoPin, INPUT);
-
-  //interval wakes WDT
-  MCUSR &= ~(1 << WDRF); // Clear watchdog reset flag
-  WDTCSR |= (1 << WDCE) | (1 << WDE); // Enable configuration
-  WDTCSR = (1 << WDIE) | (1 << WDP3) | (1 << WDP0); // ~8s interrupt
-
-  //sleep mode 
-  set_sleep_mode(SLEEP_MODE_IDLE);
-  sei(); //enable interrupts
-  sleep_enable();
-  sleep_cpu();
-  sleep_disable();
-
 }
 
 /*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
@@ -156,10 +143,6 @@ float readSensors(){
     return normalizedAvg;
 }
 
-ISR(WDT_vect  ){
-  wdtWake = true;
-}
-
 /*
 void checkComms(){
   if(Serial1.available()){
@@ -178,83 +161,65 @@ void loop() {
   
   if(SLEEP){
 
-    //wake on 8 second interval
-    if(wdtWake){
+    //Sleep for a set, adjustable period
+    LowPower.sleep(SLEEP_INTERVAL);
 
-      //reset flag
-      wdtWake = false;
+    //wake after interval and read sensors
+    normalizedAvg = readSensors();
 
-      //get sensor readings
-      normalizedAvg = readSensors();
-
-      //check if readings require active node
-      if(normalizedAvg > WAKEAVG_THRESHOLD){
-
-        //update flag if node awakes  
-        SLEEP = false;
+    if(normalizedAvg > WAKEAVG_THRESHOLD){
       
-      }
-      else{
-          
-        //put back to sleep
-        sleep_enable();
-        sleep_cpu();
-        sleep_disable();
-      
-      }
+      //update the state
+      SLEEP = false; 
+    
+    }
+
+    //this ends this iteration of the loop, the node stays inactive if normalizedAvg doesn't meet the threshold
+    return;
+
+  }
+
+  //if the node is not sleeping already
+  normalizedAvg = readSensors();
+
+  //if the avg doesn't meet the threshold
+  if(normalizedAvg <= WAKEAVG_THRESHOLD){
+
+    //check to see if there has been another recent avg low
+    if(belowThresholdStart == 0){
+
+      belowThresholdStart = getTime();
+    
+    }
+    else if(getTime() - belowThresholdStart >= SLEEP_DELAY){
+
+      //go to sleep, multiple low avg readings
+      SLEEP = true; 
+      belowThresholdStart = 0;
+
+      //explictly disable LED
+      analogWrite(redPin, 0);
+      analogWrite(greenPin, 0);
+      analogWrite(bluePin, 0);
+
+      //end this iteration
+      return;
+
     }
   }
-  //if the node is active
   else{
 
-    normalizedAvg = readSensors(); 
+    belowThresholdStart = 0; 
 
-    if(normalizedAvg <= WAKEAVG_THRESHOLD){
-      
-      //this clocks the first time normalized average goes low
-      if(belowThresholdStart == 0){
-        
-        belowThresholdStart = getTime();
-      
-      }
-      //this clocks the avg low at a close time to the first low, insurance against debounce style issues
-      else if(getTime() - belowThresholdStart >= SLEEP_DELAY){
-        //reset sleep timer
-        belowThresholdStart = getTime();
+    //configure LED
+    analogWrite(redPin, baseR * normalizedAvg);
+    analogWrite(greenPin, baseG * normalizedAvg);
+    analogWrite(bluePin, baseB * normalizedAvg);
 
-        //update flag
-        SLEEP = true;
-
-
-        //explicitly turn off LED
-        analogWrite(redPin, 0);
-        analogWrite(greenPin, 0);
-        analogWrite(bluePin, 0);
-
-        //go to sleep
-        sleep_enable();
-        sleep_cpu();
-        sleep_disable();
-      }
-    }
-    else{
-
-      //reset sleep timer
-      belowThresholdStart = 0;
-      
-      //configure the LED
-      analogWrite(redPin, baseR * normalizedAvg);
-      analogWrite(greenPin, baseG * normalizedAvg);
-      analogWrite(bluePin, baseB * normalizedAvg);
-
-      //communicate local state
-      //Serial1.write();
-      //Serial2.write();
-
-    }
-
+    return;
   }
-  delay(50); //super small delay for sensor smoothing
-}
 
+  //for sensor smoothness
+  delay(50)
+}
 /*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/

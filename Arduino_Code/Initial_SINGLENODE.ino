@@ -55,7 +55,25 @@ int RBGVector[2]; //vector to contain each 8 bit word for R G and B
 unsigned long belowThresholdStart = 0;
 boolean SLEEP = true; //current state flag, initialized to true so the nodes default to an inactive state
 float normalizedAvg;
-boolean commWake = false;
+boolean commWake = false; 
+
+//creating the packet for peer to peer communication
+struct Packet{
+
+  //this represents the on/off state of the node
+  int currentState;
+
+  //this represents the brightness of the node
+  float LEDbrightness; 
+
+  //this represents the color of the node (work in progress)
+  int RLEDcolor;
+  int GLEDcolor;
+  int BLEDcolor;
+};
+
+Packet packet = {0, 0.00f, 0, 0, 0}; //this is the general format of the packet
+
 
 /*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
 
@@ -66,8 +84,8 @@ boolean commWake = false;
 void setup() {
   
   //communication intializations
-  //Serial1.begin(9600);
-  //Serial2.begin(9600);
+  Serial1.begin(9600);
+  Serial2.begin(9600);
 
   //LED/Sensor pins
   pinMode(redPin, OUTPUT);
@@ -140,16 +158,50 @@ float readSensors(){
     /*Once we have the normalized values, we can combine and adjust LED brightness accordingly, using  a 
     weighted average of the readings, weights are adjustable based on conditions (maybe dynamically adjustable down the line?)*/
     normalizedAvg = ( (distWeight * distNorm) + (lightWeight * lightNorm) + (tempWeight * tempNorm) );
+    
+    //update the communicated brightness
+    packet.LEDbrightness = normalizedAvg; 
+    
     return normalizedAvg;
 }
 
-/*
 void checkComms(){
-  if(Serial1.available()){
 
+  //if there is a packet available for reading
+  if(Serial1.available() >= sizeof(packet)){
+
+    //read and store the packet
+    Serial1.readBytes((uint8_t*)&packet, sizeof(packet));
+
+    //if the communicated packet says this node should be 'on' 
+    if(packet.currentState == 1){
+      
+      //update the communication flag
+      commWake = true; 
+      return;
+    }
+    else{
+      
+      //ensure the flag is false
+      commWake = false;
+      return; 
+    }
+  }
+  else{
+
+    //there is no packet to read
+    return; 
   }
 }
-*/
+
+void writeComms(){
+
+  //write the packet to neighbors
+  Serial1.write((uint8_t*) &packet, sizeof(packet));
+  Serial2.write((uint8_t*) &packet, sizeof(packet));
+
+}
+
 
 /*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
 
@@ -158,17 +210,40 @@ void checkComms(){
 /*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/
 
 void loop() {
-  
+
   if(SLEEP){
+
+    //store the current communicated state
+    packet.currentState = 0;
+
+    //reset the communication flag
+    commWake = false;
 
     //Sleep for a set, adjustable period
     LowPower.sleep(SLEEP_INTERVAL);
+
+    //the board wakes early if it gets UART packet, so read it
+    checkComms();
+
+    //if the board nees to stay awake
+    if(commWake){
+
+      //update the sleep mode flag
+      SLEEP = false; 
+      return;
+
+    }
 
     //wake after interval and read sensors
     normalizedAvg = readSensors();
 
     if(normalizedAvg > WAKEAVG_THRESHOLD){
       
+      //update the communicated state
+      packet.currentState = 1;
+      packet.LEDbrightness = normalizedAvg; 
+      writeComms();
+
       //update the state
       SLEEP = false; 
     
@@ -193,6 +268,9 @@ void loop() {
     }
     else if(getTime() - belowThresholdStart >= SLEEP_DELAY){
 
+      //update the communicated state
+      packet.currentState = 0;
+      
       //go to sleep, multiple low avg readings
       SLEEP = true; 
       belowThresholdStart = 0;
@@ -211,6 +289,18 @@ void loop() {
 
     belowThresholdStart = 0; 
 
+    //update and communicate
+    packet.currentState = 1;
+    packet.LEDbrightness = normalizedAvg; 
+
+    //this could be a more dynamic thing- but for now this will do
+    packet.RLEDcolor = baseR;
+    packet.GLEDcolor = baseG;
+    packet.BLEDcolor = baseB; 
+    
+    //send it
+    writeComms();
+
     //configure LED
     analogWrite(redPin, baseR * normalizedAvg);
     analogWrite(greenPin, baseG * normalizedAvg);
@@ -220,6 +310,6 @@ void loop() {
   }
 
   //for sensor smoothness
-  delay(50)
+  delay(50);
 }
 /*--------------------------------------------------------------------------------------------------------------------------------------------------------------------------*/

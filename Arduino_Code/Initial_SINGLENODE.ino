@@ -146,7 +146,7 @@ float getDistanceCM() {
 /*Reads photoresistor's voltage*/
 float getLightLevel(){
 
-  lightLevelADC = analogRead(lightPIN);
+  lightLevelADC = analogRead(lightPin);
   float lightLevelReading = lightLevelADC * (3.3/4095.0);
   return lightLevelReading;
 

@@ -104,6 +104,10 @@ void setup() {
   pinMode(trigPin, OUTPUT);
   pinMode(echoPin, INPUT);
 
+  //disable on-board LED for power saving
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
+
   //PWM initialization for LED brightness
   analogWriteResolution(12); //shouldn't really need but can be extra safe here
   analogReadResolution(12);
